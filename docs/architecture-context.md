@@ -24,8 +24,8 @@ flowchart LR
     end
 
     subgraph cloud["Внешние хранилища и инфра"]
-        S3[S3-совместимое хранилище (Minio)]
-        OBS[Метрики / логи (Prometheus, Loki)]
+        S3[S3-совместимое хранилище Minio]
+        OBS[Метрики / логи Prometheus Loki]
     end
 
     subgraph links["Переходы по ссылкам"]
