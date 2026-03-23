@@ -58,6 +58,31 @@ Table profile_likes {
   id uuid [pk]
   from_profile_id uuid [ref: > profiles.id]
   to_profile_id uuid [ref: > profiles.id]
+  like_type varchar [note: 'communication (для общения) или favorite (в избранное)']
+  created_at timestamptz
+}
+
+Table profile_favorites {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id, note: 'кто добавил в избранное']
+  favorite_profile_id uuid [ref: > profiles.id, note: 'кого добавили']
+  created_at timestamptz
+}
+
+Table matches {
+  id uuid [pk]
+  profile1_id uuid [ref: > profiles.id]
+  profile2_id uuid [ref: > profiles.id]
+  created_at timestamptz
+  status varchar [note: 'active, archived']
+}
+
+Table messages {
+  id uuid [pk]
+  match_id uuid [ref: > matches.id]
+  from_profile_id uuid [ref: > profiles.id]
+  content text
+  is_read boolean
   created_at timestamptz
 }
 

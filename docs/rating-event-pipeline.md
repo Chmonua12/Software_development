@@ -30,9 +30,11 @@ flowchart TD
 
 | Событие | Описание | Влияние на рейтинг |
 |---------|----------|-------------------|
-| `profile.liked` | Пользователь лайкнул анкету | + к behaviour_rating |
+| `profile.liked` | Пользователь лайкнул анкету **для общения** | + к behaviour_rating |
+| `profile.favorited` | Пользователь лайкнул анкету **в избранное** | + к behaviour_rating |
 | `profile.skipped` | Пользователь пропустил анкету | - к behaviour_rating |
 | `social.link.clicked` | Переход по ссылке на соцсеть | + к behaviour_rating |
+| `match.created` | Образовался мэтч (взаимный лайк для общения) | + бонус к behaviour_rating |
 | `referral.registered` | Зарегистрировался реферал | + к referral_score |
 
 На диаграмме не показаны отдельные топики Kafka — достаточно договориться об именах событий и идемпотентности обработчиков.

@@ -13,6 +13,7 @@ flowchart TB
         AUTH[Auth / User Service]
         PROFILE[Profile Service]
         INTERACTION[Interaction Service]
+        MATCHES[Matches / Chat Service]
         RANK[Rating Service]
         FEED[Feed / Recommendation Service]
         MEDIA[Media Service]
@@ -39,6 +40,7 @@ flowchart TB
     AUTH --> PG
     PROFILE --> PG
     INTERACTION --> PG
+    MATCHES --> PG
     RANK --> PG
     CELERY --> PG
 
@@ -47,13 +49,16 @@ flowchart TB
 
     RANK --> REDIS
     FEED --> REDIS
+    MATCHES --> REDIS
 
     AUTH -->|"publish events"| KAFKA
     INTERACTION -->|"publish events"| KAFKA
+    MATCHES -->|"publish events"| KAFKA
 
     KAFKA -->|"consume events"| RANK
     KAFKA -->|"consume events"| NOTIFY
     KAFKA -->|"consume events"| CELERY
+    KAFKA -->|"consume events"| MATCHES
 
     RANK --> CELERY
 
@@ -73,8 +78,8 @@ flowchart TB
 
 | Тип связи | Описание |
 |----------|----------|
-| HTTP REST | Синхронные запросы (регистрация, анкеты, лайки, лента) |
-| MQ events | Асинхронные события (`profile.liked`, `profile.skipped`, `social.link.clicked`, `referral.registered`) |
+| HTTP REST | Синхронные запросы (регистрация, анкеты, лайки, лента, мэтчи) |
+| MQ events | Асинхронные события (`profile.liked`, `profile.favorited`, `profile.skipped`, `social.link.clicked`, `match.created`, `referral.registered`) |
 | metrics | Экспорт метрик для Prometheus |
 
 ## Описание сервисов
@@ -84,9 +89,10 @@ flowchart TB
 | Bot Service | Приём команд от пользователей Telegram, отправка уведомлений |
 | Auth / User Service | Регистрация, аутентификация, реферальная система |
 | Profile Service | Хранение анкет, соцсетей, полнота профиля |
-| Interaction Service | Лайки, пропуски, переходы по ссылкам |
+| Interaction Service | Лайки (для общения и в избранное), пропуски, переходы по ссылкам |
+| Matches / Chat Service | Отслеживание взаимных лайков, создание мэтчей, внутренняя переписка |
 | Rating Service | Трёхуровневая система рейтинга, пересчёты |
 | Feed Service | Формирование ленты, кэширование топа |
 | Media Service | Загрузка фото в Minio (S3) |
-| Notification Service | Уведомления о лайках, попадании в топ |
+| Notification Service | Уведомления о лайках, мэтчах, попадании в топ |
 | Celery Workers | Фоновые задачи, пересчёт рейтингов |

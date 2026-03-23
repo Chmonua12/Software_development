@@ -2,6 +2,10 @@
 
 Как пользователь получает карточки и какие записи и события появляются при действиях. Акцент на связке **Feed + Redis + Interaction + Kafka**, как в архитектурном описании.
 
+**Два типа лайков:**
+- **Лайк для общения** — сигнал о заинтересованности в контакте. При взаимном лайке для общения образуется **мэтч**, после чего пользователи могут начать переписку.
+- **Лайк в избранное** — добавляет анкету в личный список «избранного» без создания мэтча (оценка работы или сохранение на потом).
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -12,6 +16,8 @@ sequenceDiagram
     participant Rank as Rating Service
     participant Prof as Profile Service
     participant Int as Interaction Service
+    participant Match as Matches Service
+    participant Notify as Notification Service
     participant MQ as Kafka
 
     User->>Bot: открыть ленту / «следующая»
@@ -27,12 +33,24 @@ sequenceDiagram
         Feed->>Redis: сохранить пачку N карточек
     end
     Feed-->>Bot: одна карточка + метаданные
-    Bot-->>User: сообщение с фото и кнопками (соцсети, лайк, следующий)
+    Bot-->>User: сообщение с фото и кнопками (соцсети, лайки, следующий)
 
-    User->>Bot: лайк или пропуск
-    Bot->>Int: зафиксировать действие
+    User->>Bot: лайк для общения / лайк в избранное
+    Bot->>Int: зафиксировать действие с типом лайка
     Int->>Int: запись в БД
-    Int->>MQ: событие profile.liked / profile.skipped
+    alt лайк для общения
+        Int->>MQ: событие profile.liked (type=communication)
+        Match->>MQ: проверка на взаимный лайк
+        alt взаимный лайк
+            Match->>Match: создать мэтч
+            Match->>MQ: событие match.created
+            MQ->>Notify: уведомить обоих пользователей
+        end
+    else лайк в избранное
+        Int->>MQ: событие profile.favorited
+    else пропуск
+        Int->>MQ: событие profile.skipped
+    end
     Note over MQ,Rank: Rating Service и воркеры подписаны на поток
     Int-->>Bot: результат
 
@@ -52,3 +70,9 @@ sequenceDiagram
 - Команда `/top` запрашивает топ-10 из Redis.
 - Кэш обновляется каждые 5 минут через Celery-задачу.
 - Каждая карточка топа содержит кнопки соцсетей.
+
+**Команды для работы с лайками и мэтчами**
+
+- `/matches` — показать список активных мэтчей с кнопкой «Написать».
+- `/favorites` — показать список избранного.
+- `/top` — топ-10 художников по рейтингу.
