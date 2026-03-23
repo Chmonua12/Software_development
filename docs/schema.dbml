@@ -1,0 +1,91 @@
+// Логическая схема для ArtConnect (art-community-bot)
+// Импорт в https://dbdiagram.io или аналог для ER-диаграммы
+
+Table users {
+  id uuid [pk]
+  telegram_id bigint [unique, note: 'идентификатор из Telegram']
+  created_at timestamptz
+  status varchar [note: 'active, banned, deleted']
+}
+
+Table profiles {
+  id uuid [pk]
+  user_id uuid [ref: > users.id]
+  display_name varchar
+  age int
+  city varchar
+  bio text [note: 'описание творчества']
+  profile_completeness_score decimal
+  photos_count int
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table profile_preferences {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id]
+  age_min int
+  age_max int
+  city varchar
+  radius_km int
+}
+
+Table profile_interests {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id]
+  tag varchar [note: 'тег интереса']
+}
+
+Table profile_social_links {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id]
+  platform varchar [note: 'telegram, instagram, vk, behance, other']
+  url text
+  is_primary boolean [note: 'флаг основной соцсети (приоритет Telegram)']
+  created_at timestamptz
+}
+
+Table profile_photos {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id]
+  storage_key varchar [note: 'ключ в S3/Minio']
+  is_avatar boolean [note: 'флаг аватарки']
+  order_index int
+  created_at timestamptz
+}
+
+Table profile_likes {
+  id uuid [pk]
+  from_profile_id uuid [ref: > profiles.id]
+  to_profile_id uuid [ref: > profiles.id]
+  created_at timestamptz
+}
+
+Table link_clicks {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id, note: 'чью ссылку открыли']
+  viewer_profile_id uuid [ref: > profiles.id, note: 'кто открыл']
+  platform varchar [note: 'какую соцсеть']
+  created_at timestamptz
+}
+
+Table profile_ratings {
+  id uuid [pk]
+  profile_id uuid [ref: > profiles.id, unique]
+  primary_rating decimal [note: 'Уровень 1: качество анкеты']
+  behavior_rating decimal [note: 'Уровень 2: поведенческий']
+  combined_rating decimal [note: 'Уровень 3: комбинированный']
+  likes_count int
+  views_count int
+  link_clicks_count int
+  referral_score decimal [note: 'бонусы за рефералов']
+  last_recalculated_at timestamptz
+}
+
+Table referrals {
+  id uuid [pk]
+  inviter_profile_id uuid [ref: > profiles.id]
+  invited_user_id uuid [ref: > users.id]
+  status varchar [note: 'registered, active, bonus_applied']
+  created_at timestamptz
+}
