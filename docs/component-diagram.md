@@ -9,7 +9,7 @@ flowchart TB
     end
 
     subgraph services["Сервисы приложения"]
-        BOT[Bot Service (aiogram)]
+        BOT[Bot Service aiogram]
         AUTH[Auth / User Service]
         PROFILE[Profile Service]
         INTERACTION[Interaction Service]
