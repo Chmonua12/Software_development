@@ -28,17 +28,17 @@ flowchart LR
         OBS[Метрики / логи (Prometheus, Loki)]
     end
 
-    U <-->|чаты, кнопки, медиа| TG
-    TG <--> APP
-    APP --> S3
-    APP --> OBS
-    
     subgraph links["Переходы по ссылкам"]
         APP -.->|кнопки соцсетей| INST
         APP -.->|кнопки соцсетей| VK
         APP -.->|кнопки соцсетей| BEH
         APP -.->|кнопки соцсетей| TCH
     end
+
+    U <-->|чаты, кнопки, медиа| TG
+    TG <--> APP
+    APP --> S3
+    APP --> OBS
 ```
 
 **Смысл блоков**
