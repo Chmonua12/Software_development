@@ -1,4 +1,5 @@
 # ArtConnect — Telegram-бот для арт-комьюнити
+## Ссылка на бот: https://t.me/artik_community_bot
 
 ## Солодовникова Милена, К0709-23/3
 
