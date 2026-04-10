@@ -85,6 +85,75 @@ def _social_url(platform: str) -> str | None:
 
 
 # ── Handlers ────────────────────────────────────────────────────
+
+# ── Command handlers (must be above state handlers) ─────────────
+@router.message(Command("profile"))
+async def profile_command(message: Message) -> None:
+    if message.from_user is None:
+        return
+    profile = storage.get_profile_by_telegram_id(message.from_user.id)
+    if profile is None:
+        await message.answer("Анкета пока не заполнена. Нажми /start.")
+        return
+    photos = storage.get_photos_by_profile_id(profile.id)
+    socials = storage.get_social_links_by_profile_id(profile.id)
+    interests = storage.get_interests_by_profile_id(profile.id)
+
+    lines = [
+        f"₍^. .^₎Ⳋ*{profile.display_name}*, {profile.age}, {profile.city}",
+        profile.bio or "—",
+    ]
+    if interests:
+        lines.append(f"Направления: {', '.join(interests)}")
+    if socials:
+        links = "\n".join(f"[{s.platform}]({s.url})" for s in socials)
+        lines.append(f"\nСоцсети:\n{links}")
+
+    caption = "\n".join(lines)
+    valid_photos = [p for p in photos if p.file_id]
+
+    if valid_photos:
+        media_group = []
+        for idx, photo in enumerate(valid_photos):
+            if idx == 0:
+                media_group.append(
+                    InputMediaPhoto(
+                        media=photo.file_id,
+                        caption=caption,
+                        parse_mode="Markdown",
+                    )
+                )
+            else:
+                media_group.append(
+                    InputMediaPhoto(media=photo.file_id)
+                )
+        await message.answer_media_group(media=media_group)
+    else:
+        await message.answer(caption, parse_mode="Markdown")
+
+
+@router.message(Command("cancel"))
+async def cancel_command(message: Message, state: FSMContext) -> None:
+    await message.answer("Ок, отменил заполнение. Нажми /start для нового старта.")
+    await state.clear()
+
+
+@router.message(Command("help"))
+async def help_command(message: Message) -> None:
+    await message.answer(
+        "❣*ArtConnect* - бот для арт-комьюнити.\n\n"
+        "Команды:\n"
+        "/start — регистрация и заполнение анкеты\n"
+        "/profile — показать свою анкету\n"
+        "/feed — лента художников (не рабоч)\n"
+        "/top — топ-10 по рейтингу(не рабоч)\n"
+        "/cancel — отменить заполнение(не рабоч)\n"
+        "/help — справка(не рабоч)",
+        parse_mode="Markdown",
+    )
+
+
+# ── Registration handlers ──────────────────────────────────────
 @router.message(CommandStart(deep_link=True))
 async def start_with_referral(message: Message, state: FSMContext) -> None:
     """Handle /start with referral code from deep link."""
@@ -141,7 +210,7 @@ async def _start_common(
     tg_user = message.from_user
     if created:
         text = (
-            f"Привет, {tg_user.first_name or 'художник'}! 🎨\n"
+            f"Привет, {tg_user.first_name or 'художник'}! \n"
             "Я зарегистрировал тебя в ArtConnect.\n\n"
             f"Твой Telegram ID: `{user.telegram_id}`\n"
             f"Реферальная ссылка: `https://t.me/{tg_user.username or 'artconnect_bot'}?start={user.referral_code}`\n\n"
@@ -149,7 +218,7 @@ async def _start_common(
         )
     else:
         text = (
-            "С возвращением в ArtConnect! 🎨\n\n"
+            "С возвращением в ArtConnect\n\n"
             f"Твой Telegram ID: `{user.telegram_id}`\n"
             "Можно обновить анкету заново."
         )
@@ -170,7 +239,7 @@ async def process_name(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     data["profile_name"] = name
     await state.set_data(data)
-    await message.answer("Сколько тебе лет? (18-99)")
+    await message.answer("Сколько тебе лет?")
     await state.set_state(RegistrationState.age)
 
 
@@ -437,72 +506,6 @@ async def _finalize_registration(message: Message, state: FSMContext) -> None:
         reply_markup=ReplyKeyboardRemove(),
     )
     await state.clear()
-
-
-@router.message(Command("profile"), State.default)
-async def profile_command(message: Message) -> None:
-    if message.from_user is None:
-        return
-    profile = storage.get_profile_by_telegram_id(message.from_user.id)
-    if profile is None:
-        await message.answer("Анкета пока не заполнена. Нажми /start.")
-        return
-    photos = storage.get_photos_by_profile_id(profile.id)
-    socials = storage.get_social_links_by_profile_id(profile.id)
-    interests = storage.get_interests_by_profile_id(profile.id)
-
-    lines = [
-        f"🎨 *{profile.display_name}*, {profile.age}, {profile.city}",
-        profile.bio or "—",
-    ]
-    if interests:
-        lines.append(f"Направления: {', '.join(interests)}")
-    if socials:
-        links = "\n".join(f"[{s.platform}]({s.url})" for s in socials)
-        lines.append(f"\nСоцсети:\n{links}")
-
-    caption = "\n".join(lines)
-    valid_photos = [p for p in photos if p.file_id]
-
-    if valid_photos:
-        media_group = []
-        for idx, photo in enumerate(valid_photos):
-            if idx == 0:
-                media_group.append(
-                    InputMediaPhoto(
-                        media=photo.file_id,
-                        caption=caption,
-                        parse_mode="Markdown",
-                    )
-                )
-            else:
-                media_group.append(
-                    InputMediaPhoto(media=photo.file_id)
-                )
-        await message.answer_media_group(media=media_group)
-    else:
-        await message.answer(caption, parse_mode="Markdown")
-
-
-@router.message(Command("cancel"), State.default)
-async def cancel_command(message: Message, state: FSMContext) -> None:
-    await message.answer("Ок, отменил заполнение. Нажми /start для нового старта.")
-    await state.clear()
-
-
-@router.message(Command("help"), State.default)
-async def help_command(message: Message) -> None:
-    await message.answer(
-        "🎨 *ArtConnect* — бот для арт-комьюнити.\n\n"
-        "Команды:\n"
-        "/start — регистрация и заполнение анкеты\n"
-        "/profile — показать свою анкету\n"
-        "/feed — лента художников\n"
-        "/top — топ-10 по рейтингу\n"
-        "/cancel — отменить заполнение\n"
-        "/help — эта справка",
-        parse_mode="Markdown",
-    )
 
 
 # ── Entry point ─────────────────────────────────────────────────
