@@ -8,7 +8,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY sql/ ./sql/
 COPY main.py .
 
-# Скрипт инициализации БД из schema.sql
 COPY init_db.sh ./init_db.sh
 RUN chmod +x init_db.sh
 
