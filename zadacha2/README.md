@@ -29,7 +29,14 @@
 
 ## Полученные результаты
 
-Запуск прогона
+**Запуск контейнеров:**
+<img width="905" height="424" alt="image" src="https://github.com/user-attachments/assets/f1eaa7d1-0116-433c-a3d1-b26d0d8794bd" />
+
+<img width="1282" height="749" alt="image" src="https://github.com/user-attachments/assets/db66ffdc-29d0-4362-8ab1-8efb6ec4c40e" />
+
+**Запуск тестов**
+<img width="651" height="624" alt="image" src="https://github.com/user-attachments/assets/2a8de9b7-be58-4b17-b61a-cb299aa1e25b" />
+
 
 
 ### Основные поля в таблице результатов
