@@ -9,43 +9,52 @@ BROKER = os.getenv("BROKER")
 
 count = 0
 latencies = []
-lost = 0      
+errors = 0
 
 async def rabbit():
-    global count, latencies, lost
+    global count, latencies, errors
     connection = await aio_pika.connect_robust("amqp://guest:guest@localhost/")
     channel = await connection.channel()
     queue = await channel.declare_queue("test", durable=False)
+    
+    print("RabbitMQ consumer started, waiting for messages...")
 
     async with queue.iterator() as q:
         async for message in q:
             async with message.process():
                 try:
                     data = json.loads(message.body)
-                    sent_time = data.get("timestamp")
-                    if sent_time:
-                        latency = time.time() - sent_time
-                        latencies.append(latency)
+                    sent_ts = data.get("timestamp")
+                    if sent_ts:
+                        latency_ms = (time.time() - sent_ts) * 1000
+                        latencies.append(latency_ms)
                     count += 1
-                except:
-                    lost += 1
+                    if count % 1000 == 0:
+                        print(f"Received: {count}")
+                except Exception as e:
+                    errors += 1
+                    print(f"Error processing: {e}")
 
 async def redis():
-    global count, latencies, lost
+    global count, latencies, errors
     r = aioredis.from_url("redis://localhost")
+    print("Redis consumer started, waiting for messages...")
 
     while True:
         msg = await r.brpop("test")
         if msg:
             try:
                 data = json.loads(msg[1])
-                sent_time = data.get("timestamp")
-                if sent_time:
-                    latency = time.time() - sent_time
-                    latencies.append(latency)
+                sent_ts = data.get("timestamp")
+                if sent_ts:
+                    latency_ms = (time.time() - sent_ts) * 1000
+                    latencies.append(latency_ms)
                 count += 1
-            except:
-                lost += 1
+                if count % 1000 == 0:
+                    print(f"Received: {count}")
+            except Exception as e:
+                errors += 1
+                print(f"Error processing: {e}")
 
 async def stats():
     start = time.time()
@@ -53,13 +62,14 @@ async def stats():
         await asyncio.sleep(5)
         now = time.time()
         elapsed = int(now - start)
-        print(f"\n--- {elapsed}s ---")
-        print(f"Processed: {count}")
-        print(f"Lost: {lost}")
+        
+        print(f"\n[{elapsed}s] Processed: {count} | Errors: {errors}")
+        
         if latencies:
-            print(f"Avg latency: {sum(latencies)/len(latencies):.4f}s")
-            print(f"P95 latency: {sorted(latencies)[int(len(latencies)*0.95)]:.4f}s")
-            print(f"Max latency: {max(latencies):.4f}s")
+            sorted_lat = sorted(latencies)
+            p95_idx = int(len(sorted_lat) * 0.95)
+            print(f"  Latency - Avg: {sum(latencies)/len(latencies):.2f}ms | P95: {sorted_lat[p95_idx]:.2f}ms | Max: {max(latencies):.2f}ms")
+            print(f"  Throughput: {count/elapsed:.2f} msg/s")
 
 async def main():
     if BROKER == "rabbit":
