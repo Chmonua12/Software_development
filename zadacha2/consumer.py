@@ -8,8 +8,8 @@ import aio_pika
 BROKER = os.getenv("BROKER")
 
 count = 0
-latencies = []  # для p95
-lost = 0        # потерянные сообщения
+latencies = []
+lost = 0      
 
 async def rabbit():
     global count, latencies, lost
