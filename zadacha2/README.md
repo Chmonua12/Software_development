@@ -39,6 +39,8 @@
 
 <img width="583" height="134" alt="image" src="https://github.com/user-attachments/assets/4e36aacc-83f9-4786-b89b-dff7ecf8edab" />
 
+<img width="951" height="754" alt="Снимок экрана 2026-04-21 225650" src="https://github.com/user-attachments/assets/66e36e56-e480-4eb1-ab71-1ef2fd53f43b" />
+
 
 
 ### Основные поля в таблице результатов
