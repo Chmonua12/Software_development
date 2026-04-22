@@ -24,6 +24,8 @@ async def rabbit():
 
     interval = 1.0 / RATE
     end = time.time() + DURATION
+    
+    print(f"Starting producer: rate={RATE}, duration={DURATION}, interval={interval:.4f}s")
 
     while time.time() < end:
         body = json.dumps({
@@ -37,15 +39,19 @@ async def rabbit():
                 routing_key="test"
             )
             sent += 1
-        except:
+            if sent % 1000 == 0:
+                print(f"Sent: {sent}")
+        except Exception as e:
             errors += 1
+            print(f"Error: {e}")
         await asyncio.sleep(interval)
     
-    print(f"Sent: {sent}, Errors: {errors}")
+    print(f"[PRODUCER] Sent: {sent}, Errors: {errors}")
+    await connection.close()
 
 async def redis():
     global sent, errors
-    r = aioredis.from_url("redis://localhost")
+    r = await aioredis.from_url("redis://localhost")
     interval = 1.0 / RATE
     end = time.time() + DURATION
 
@@ -58,11 +64,15 @@ async def redis():
         try:
             await r.lpush("test", body)
             sent += 1
-        except:
+            if sent % 1000 == 0:
+                print(f"Sent: {sent}")
+        except Exception as e:
             errors += 1
+            print(f"Error: {e}")
         await asyncio.sleep(interval)
     
-    print(f"Sent: {sent}, Errors: {errors}")
+    print(f"[PRODUCER] Sent: {sent}, Errors: {errors}")
+    await r.close()
 
 if BROKER == "rabbit":
     asyncio.run(rabbit())
