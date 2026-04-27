@@ -17,6 +17,7 @@ from aiogram.types import (
     InputMediaPhoto,
     Message,
     ReplyKeyboardRemove,
+    CallbackQuery,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -38,7 +39,6 @@ feed_service = FeedService()
 router = Router()
 
 
-# ── States ──────────────────────────────────────────────────────
 class RegistrationState(StatesGroup):
     name = State()
     age = State()
@@ -52,7 +52,6 @@ class RegistrationState(StatesGroup):
     add_another_social = State()
 
 
-# ── Helpers ─────────────────────────────────────────────────────
 PLATFORMS = {
     "telegram": "Telegram",
     "instagram": "Instagram",
@@ -78,15 +77,9 @@ def _social_url(platform: str) -> str | None:
         "vk": r"^https?://(www\.)?vk\.com/",
         "behance": r"^https?://(www\.)?behance\.net/",
     }
-    pat = patterns.get(platform)
-    if pat:
-        return pat
-    return None
+    return patterns.get(platform)
 
 
-# ── Handlers ────────────────────────────────────────────────────
-
-# ── Command handlers (must be above state handlers) ─────────────
 @router.message(Command("profile"))
 async def profile_command(message: Message) -> None:
     if message.from_user is None:
@@ -132,6 +125,229 @@ async def profile_command(message: Message) -> None:
         await message.answer(caption, parse_mode="Markdown")
 
 
+@router.message(Command("feed"))
+async def feed_command(message: Message, state: FSMContext) -> None:
+    if message.from_user is None:
+        return
+    
+    profile = storage.get_profile_by_telegram_id(message.from_user.id)
+    if profile is None:
+        await message.answer("Сначала заполни анкету через /start")
+        return
+    
+    next_profile = await feed_service.get_next_profile(storage, profile.id)
+    
+    if next_profile is None:
+        await message.answer("Пока нет других анкет :(")
+        return
+    
+    photos = storage.get_photos_by_profile_id(next_profile.id)
+    
+    interests = storage.get_interests_by_profile_id(next_profile.id)
+    interests_text = f"\n₊˚⊹♡ {', '.join(interests)}" if interests else ""
+    
+    caption = (
+        f"*{next_profile.display_name}*, {next_profile.age}, {next_profile.city}\n"
+        f"{next_profile.bio or '—'}{interests_text}"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❤️ Лайк", callback_data=f"like:{next_profile.id}"),
+            InlineKeyboardButton(text="👎 Пропустить", callback_data=f"skip:{next_profile.id}")
+        ],
+        [
+            InlineKeyboardButton(text="👤 Профиль", callback_data=f"view_profile:{next_profile.id}")
+        ]
+    ])
+    
+    if photos:
+        await message.answer_photo(
+            photos[0].file_id,
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    else:
+        await message.answer(caption, parse_mode="Markdown", reply_markup=keyboard)
+
+
+@router.message(Command("top"))
+async def top_command(message: Message) -> None:
+    if message.from_user is None:
+        return
+    
+    profile = storage.get_profile_by_telegram_id(message.from_user.id)
+    if profile is None:
+        await message.answer("Сначала заполни анкету через /start")
+        return
+    
+    with storage._connect() as conn:
+        rows = conn.execute(
+            """SELECT p.id, p.display_name, p.age, p.city, r.combined_rating, p.photos_count
+               FROM profiles p
+               JOIN profile_ratings r ON r.profile_id = p.id
+               ORDER BY r.combined_rating DESC
+               LIMIT 10"""
+        ).fetchall()
+    
+    if not rows:
+        await message.answer("Нет данных для топа")
+        return
+    
+    lines = ["₊˚⊹♡ *Топ-10 художников* \n"]
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for idx, row in enumerate(rows):
+        medal = medals[idx] if idx < 3 else f"{idx+1}."
+        rating = row["combined_rating"] * 100
+        lines.append(f"{medal} *{row['display_name']}*, {row['age']} — рейтинг: {rating:.0f}")
+    
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("like:"))
+async def handle_like(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.from_user is None or callback.message is None:
+        return
+    
+    target_id = int(callback.data.split(":")[1])
+    
+    viewer_profile = storage.get_profile_by_telegram_id(callback.from_user.id)
+    if viewer_profile is None:
+        await callback.message.answer("Сначала заполни анкету через /start")
+        await callback.answer()
+        return
+    
+    from bot.feed_cache import publish_interaction_event, invalidate
+    
+    with storage._connect() as conn:
+        existing = conn.execute(
+            "SELECT id FROM profile_likes WHERE from_profile_id = ? AND to_profile_id = ?",
+            (viewer_profile.id, target_id)
+        ).fetchone()
+        
+        if existing is None:
+            conn.execute(
+                "INSERT INTO profile_likes (from_profile_id, to_profile_id, like_type, created_at) VALUES (?, ?, 'like', ?)",
+                (viewer_profile.id, target_id, __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat())
+            )
+            
+            conn.execute(
+                "UPDATE profile_ratings SET likes_count = likes_count + 1 WHERE profile_id = ?",
+                (target_id,)
+            )
+            
+            conn.commit()
+    
+    publish_interaction_event(storage, "like", viewer_profile.id, target_id)
+    invalidate(viewer_profile.id)
+    
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("𖹭 Ты поставил лайк!")
+    await callback.answer()
+    
+    await feed_command(callback.message, state)
+
+
+@router.callback_query(F.data.startswith("skip:"))
+async def handle_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.from_user is None or callback.message is None:
+        return
+    
+    target_id = int(callback.data.split(":")[1])
+    
+    viewer_profile = storage.get_profile_by_telegram_id(callback.from_user.id)
+    if viewer_profile is None:
+        await callback.message.answer("Сначала заполни анкету через /start")
+        await callback.answer()
+        return
+    
+    from bot.feed_cache import publish_interaction_event, invalidate
+    
+    with storage._connect() as conn:
+        existing = conn.execute(
+            "SELECT id FROM profile_likes WHERE from_profile_id = ? AND to_profile_id = ?",
+            (viewer_profile.id, target_id)
+        ).fetchone()
+        
+        if existing is None:
+            conn.execute(
+                "INSERT INTO profile_likes (from_profile_id, to_profile_id, like_type, created_at) VALUES (?, ?, 'skip', ?)",
+                (viewer_profile.id, target_id, __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat())
+            )
+            
+            conn.execute(
+                "UPDATE profile_ratings SET skips_count = skips_count + 1 WHERE profile_id = ?",
+                (target_id,)
+            )
+            
+            conn.commit()
+    
+    publish_interaction_event(storage, "skip", viewer_profile.id, target_id)
+    invalidate(viewer_profile.id)
+    
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer()
+    
+    await feed_command(callback.message, state)
+
+
+@router.callback_query(F.data.startswith("view_profile:"))
+async def view_other_profile(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        return
+    
+    target_id = int(callback.data.split(":")[1])
+    
+    target_dict = storage.get_profile_by_id(target_id)
+    if target_dict is None:
+        await callback.message.answer("Профиль не найден")
+        await callback.answer()
+        return
+    
+    from bot.storage import Profile
+    target_profile = Profile(
+        id=target_dict["id"],
+        user_id=target_dict["user_id"],
+        display_name=target_dict["display_name"],
+        age=target_dict["age"],
+        city=target_dict["city"],
+        bio=target_dict["bio"],
+        profile_completeness_score=target_dict["profile_completeness_score"],
+        photos_count=target_dict["photos_count"],
+        created_at=target_dict["created_at"],
+        updated_at=target_dict["updated_at"],
+    )
+    
+    photos = storage.get_photos_by_profile_id(target_profile.id)
+    socials = storage.get_social_links_by_profile_id(target_profile.id)
+    interests = storage.get_interests_by_profile_id(target_profile.id)
+    
+    lines = [
+        f"ೃ‧₊›*{target_profile.display_name}*, {target_profile.age}, {target_profile.city}",
+        target_profile.bio or "—",
+    ]
+    if interests:
+        lines.append(f"Направления: {', '.join(interests)}")
+    if socials:
+        links = "\n".join(f"[{s.platform}]({s.url})" for s in socials[:3])
+        lines.append(f"\nСоцсети:\n{links}")
+    
+    caption = "\n".join(lines)
+    
+    if photos:
+        await callback.message.answer_photo(
+            photos[0].file_id,
+            caption=caption,
+            parse_mode="Markdown"
+        )
+    else:
+        await callback.message.answer(caption, parse_mode="Markdown")
+    
+    await callback.answer()
+
+
 @router.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext) -> None:
     await message.answer("Ок, отменил заполнение. Нажми /start для нового старта.")
@@ -145,18 +361,16 @@ async def help_command(message: Message) -> None:
         "Команды:\n"
         "/start — регистрация и заполнение анкеты\n"
         "/profile — показать свою анкету\n"
-        "/feed — лента художников (не рабоч)\n"
-        "/top — топ-10 по рейтингу(не рабоч)\n"
-        "/cancel — отменить заполнение(не рабоч)\n"
-        "/help — справка(не рабоч)",
+        "/feed — лента художников\n"
+        "/top — топ-10 по рейтингу\n"
+        "/cancel — отменить заполнение\n"
+        "/help — справка",
         parse_mode="Markdown",
     )
 
 
-# ── Registration handlers ──────────────────────────────────────
 @router.message(CommandStart(deep_link=True))
 async def start_with_referral(message: Message, state: FSMContext) -> None:
-    """Handle /start with referral code from deep link."""
     if message.from_user is None:
         return
     args = message.text.split(maxsplit=1)
@@ -170,22 +384,18 @@ async def start_with_referral(message: Message, state: FSMContext) -> None:
         last_name=tg_user.last_name,
     )
 
-    # Check if this user was referred by someone
     if created and referral_code:
-        inviter = None
         with storage._connect() as conn:
             row = conn.execute(
                 "SELECT id FROM users WHERE referral_code = ?", (referral_code,),
             ).fetchone()
             if row:
                 inviter = row["id"]
-                user_id = user.id
-                # Get inviter's profile_id
                 prof = conn.execute(
                     "SELECT id FROM profiles WHERE user_id = ?", (inviter,),
                 ).fetchone()
                 if prof:
-                    storage.record_referral(prof["id"], user_id)
+                    storage.record_referral(prof["id"], user.id)
 
     await _start_common(message, state, user, created)
 
@@ -352,10 +562,6 @@ async def _after_artworks(message: Message, state: FSMContext, data: dict) -> No
     await state.set_state(RegistrationState.interests)
 
 
-async def process_no_photo(message: Message, state: FSMContext) -> None:
-    await _after_artworks(message, state, await state.get_data())
-
-
 @router.message(RegistrationState.artworks, ~F.photo)
 async def process_artworks_not_photo(message: Message, state: FSMContext) -> None:
     if message.text and message.text.strip() == "-":
@@ -385,7 +591,7 @@ async def process_interests(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("social:"))
 async def process_social_platform(
-    callback, state: FSMContext
+    callback: CallbackQuery, state: FSMContext
 ) -> None:
     if callback.message is None:
         return
@@ -432,7 +638,7 @@ async def process_social_url(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("add_social:"))
-async def process_add_another_social(callback, state: FSMContext) -> None:
+async def process_add_another_social(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None:
         return
     choice = callback.data.split(":", 1)[1]
@@ -460,7 +666,6 @@ async def _finalize_registration(message: Message, state: FSMContext) -> None:
         bio=data.get("profile_bio"),
     )
 
-    # Аватарка (в реальном проекте — загрузка в Minio)
     avatar_file_id = data.get("avatar_file_id")
     if avatar_file_id:
         storage.add_photo(
@@ -470,7 +675,6 @@ async def _finalize_registration(message: Message, state: FSMContext) -> None:
             is_avatar=True,
         )
 
-    # Работы
     for idx, fid in enumerate(data.get("artwork_file_ids", [])):
         storage.add_photo(
             profile.id,
@@ -478,11 +682,9 @@ async def _finalize_registration(message: Message, state: FSMContext) -> None:
             file_id=fid,
         )
 
-    # Интересы
     for tag in data.get("profile_interests", []):
         storage.add_interest(profile.id, tag)
 
-    # Соцсети
     socials = data.get("socials", [])
     for idx, s in enumerate(socials):
         storage.add_social_link(
@@ -491,12 +693,11 @@ async def _finalize_registration(message: Message, state: FSMContext) -> None:
 
     completeness = storage._calc_completeness_by_profile(profile.id)
 
-    # Инициализация рейтинга (Уровень 1)
     storage.init_rating(profile.id)
     logger.info("Rating initialized for profile %d (primary=%.2f)", profile.id, completeness)
 
     await message.answer(
-        "🎉 Анкета готова! Теперь ты появляешься в ленте.\n\n"
+        "ೃ‧₊› Анкета готова! Теперь ты появляешься в ленте.\n\n"
         f"Полнота профиля: {completeness:.0%}\n"
         "Команды:\n"
         "/profile — моя анкета\n"
@@ -508,14 +709,11 @@ async def _finalize_registration(message: Message, state: FSMContext) -> None:
     await state.clear()
 
 
-# ── Entry point ─────────────────────────────────────────────────
 def get_bot_token() -> str:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise RuntimeError(
-            "Не задан TELEGRAM_BOT_TOKEN. Установи переменную окружения."
-        )
+        raise RuntimeError("Не задан токен")
     return token
 
 
