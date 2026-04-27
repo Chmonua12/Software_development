@@ -33,6 +33,21 @@ class Profile:
 
 
 @dataclass(frozen=True)
+class ProfileRating:
+    id: int
+    profile_id: int
+    primary_rating: float
+    behavior_rating: float
+    combined_rating: float
+    likes_count: int
+    skips_count: int
+    matches_count: int
+    dialogs_count: int
+    referral_score: float
+    last_recalculated_at: str | None
+
+
+@dataclass(frozen=True)
 class Photo:
     id: int
     profile_id: int
@@ -388,6 +403,15 @@ class UserStorage:
                 updated_at=row["updated_at"],
             )
 
+    def get_profile_by_id(self, profile_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM profiles WHERE id = ?", (profile_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(row)
+
     def get_photos_by_profile_id(self, profile_id: int) -> list[Photo]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -418,6 +442,14 @@ class UserStorage:
                 )
                 for r in rows
             ]
+
+    def get_interests_by_profile_id(self, profile_id: int) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT tag FROM profile_interests WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchall()
+            return [r["tag"] for r in rows]
 
     @staticmethod
     def _calc_completeness(
@@ -455,15 +487,6 @@ class UserStorage:
             base += min(interests * 0.03, 0.15)
             return round(min(base, 1.0), 2)
 
-    def get_interests_by_profile_id(self, profile_id: int) -> list[str]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT tag FROM profile_interests WHERE profile_id = ?",
-                (profile_id,),
-            ).fetchall()
-            return [r["tag"] for r in rows]
-
-    # ── Rating methods ──────────────────────────────────────────
     def init_rating(self, profile_id: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
         primary = self._calc_completeness_by_profile(profile_id)
@@ -478,7 +501,7 @@ class UserStorage:
             )
             conn.commit()
 
-    def get_rating(self, profile_id: int) -> dict | None:
+    def get_rating_row(self, profile_id: int) -> ProfileRating | None:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM profile_ratings WHERE profile_id = ?",
@@ -486,87 +509,119 @@ class UserStorage:
             ).fetchone()
             if row is None:
                 return None
-            return dict(row)
-
-    def increment_likes(self, profile_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE profile_ratings SET likes_count = likes_count + 1, "
-                "behavior_rating = MIN(1.0, behavior_rating + 0.02), "
-                "last_recalculated_at = ? WHERE profile_id = ?",
-                (datetime.now(timezone.utc).isoformat(), profile_id),
+            return ProfileRating(
+                id=row["id"],
+                profile_id=row["profile_id"],
+                primary_rating=row["primary_rating"],
+                behavior_rating=row["behavior_rating"],
+                combined_rating=row["combined_rating"],
+                likes_count=row["likes_count"],
+                skips_count=row["skips_count"],
+                matches_count=row["matches_count"],
+                dialogs_count=row["dialogs_count"],
+                referral_score=row["referral_score"],
+                last_recalculated_at=row["last_recalculated_at"],
             )
-            conn.commit()
 
-    def increment_skip(self, profile_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE profile_ratings SET skips_count = skips_count + 1, "
-                "behavior_rating = MAX(0.0, behavior_rating - 0.01), "
-                "last_recalculated_at = ? WHERE profile_id = ?",
-                (datetime.now(timezone.utc).isoformat(), profile_id),
-            )
-            conn.commit()
-
-    def increment_match(self, profile_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE profile_ratings SET matches_count = matches_count + 1, "
-                "behavior_rating = MIN(1.0, behavior_rating + 0.05), "
-                "last_recalculated_at = ? WHERE profile_id = ?",
-                (datetime.now(timezone.utc).isoformat(), profile_id),
-            )
-            conn.commit()
-
-    def recalculate_combined(self) -> int:
-        """Recalculate combined_rating for all profiles. Returns count."""
+    def upsert_rating(
+        self,
+        profile_id: int,
+        primary: float,
+        behavior: float,
+        combined: float,
+        likes: int,
+        skips: int,
+        matches: int,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM profile_ratings").fetchall()
-            updated = 0
-            for row in rows:
-                primary = row["primary_rating"]
-                behavior = row["behavior_rating"]
-                referral = row["referral_score"]
-                combined = round(0.4 * primary + 0.6 * behavior + referral, 4)
-                conn.execute(
-                    "UPDATE profile_ratings SET combined_rating = ?, "
-                    "last_recalculated_at = ? WHERE profile_id = ?",
-                    (combined, now, row["profile_id"]),
-                )
-                updated += 1
+            conn.execute(
+                """INSERT INTO profile_ratings (
+                    profile_id, primary_rating, behavior_rating, combined_rating,
+                    likes_count, skips_count, matches_count, last_recalculated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    primary_rating = excluded.primary_rating,
+                    behavior_rating = excluded.behavior_rating,
+                    combined_rating = excluded.combined_rating,
+                    likes_count = excluded.likes_count,
+                    skips_count = excluded.skips_count,
+                    matches_count = excluded.matches_count,
+                    last_recalculated_at = excluded.last_recalculated_at""",
+                (profile_id, primary, behavior, combined, likes, skips, matches, now),
+            )
             conn.commit()
-            return updated
 
-    def get_top_profiles(self, limit: int = 10) -> list[dict]:
+    def recompute_aggregates_from_db(self, profile_id: int) -> tuple[int, int, int]:
+        with self._connect() as conn:
+            likes = conn.execute(
+                "SELECT COUNT(*) FROM profile_likes WHERE to_profile_id = ? AND like_type = 'like'",
+                (profile_id,),
+            ).fetchone()[0]
+            skips = conn.execute(
+                "SELECT COUNT(*) FROM profile_likes WHERE to_profile_id = ? AND like_type = 'skip'",
+                (profile_id,),
+            ).fetchone()[0]
+            matches = conn.execute(
+                "SELECT COUNT(*) FROM matches WHERE (profile1_id = ? OR profile2_id = ?) AND status = 'active'",
+                (profile_id, profile_id),
+            ).fetchone()[0]
+            return likes, skips, matches
+
+    def get_already_shown_to_ids(self, profile_id: int) -> list[int]:
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT p.*, r.combined_rating
-                   FROM profiles p
-                   JOIN profile_ratings r ON r.profile_id = p.id
-                   ORDER BY r.combined_rating DESC
-                   LIMIT ?""",
-                (limit,),
+                "SELECT to_profile_id FROM profile_likes WHERE from_profile_id = ?",
+                (profile_id,),
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [r["to_profile_id"] for r in rows]
 
-    def get_feed_candidates(self, viewer_profile_id: int, limit: int = 10) -> list[dict]:
-        """Get ranked profiles excluding viewer and already-liked/skipped."""
+    def list_candidate_profiles(self, viewer: Profile, exclude_ids: list[int], limit: int = 500) -> list[Profile]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT p.*, r.combined_rating
-                   FROM profiles p
-                   JOIN profile_ratings r ON r.profile_id = p.id
-                   WHERE p.id != ?
-                     AND p.id NOT IN (
-                         SELECT to_profile_id FROM profile_likes
-                         WHERE from_profile_id = ?
-                     )
-                   ORDER BY r.combined_rating DESC, RANDOM()
-                   LIMIT ?""",
-                (viewer_profile_id, viewer_profile_id, limit),
-            ).fetchall()
-            return [dict(r) for r in rows]
+            if exclude_ids:
+                placeholders = ','.join('?' * len(exclude_ids))
+                query = f"""
+                    SELECT * FROM profiles 
+                    WHERE id != ? AND id NOT IN ({placeholders})
+                    LIMIT ?
+                """
+                params = [viewer.id] + exclude_ids + [limit]
+            else:
+                query = "SELECT * FROM profiles WHERE id != ? LIMIT ?"
+                params = [viewer.id, limit]
+            rows = conn.execute(query, params).fetchall()
+            return [
+                Profile(
+                    id=r["id"],
+                    user_id=r["user_id"],
+                    display_name=r["display_name"],
+                    age=r["age"],
+                    city=r["city"],
+                    bio=r["bio"],
+                    profile_completeness_score=r["profile_completeness_score"],
+                    photos_count=r["photos_count"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                )
+                for r in rows
+            ]
+
+    def get_event_log_payload(
+        self,
+        event_type: str,
+        from_pid: int,
+        to_pid: int,
+        extra: dict | None = None,
+    ) -> str:
+        import json
+        payload = {
+            "event": event_type,
+            "from": from_pid,
+            "to": to_pid,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "extra": extra or {},
+        }
+        return json.dumps(payload)
 
     def record_referral(self, inviter_profile_id: int, invited_user_id: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -577,16 +632,7 @@ class UserStorage:
                 (inviter_profile_id, invited_user_id, now),
             )
             conn.execute(
-                "UPDATE profile_ratings SET referral_score = referral_score + 0.05 WHERE profile_id = ?",
+                "UPDATE profile_ratings SET referral_score = MIN(1.0, referral_score + 0.05) WHERE profile_id = ?",
                 (inviter_profile_id,),
             )
             conn.commit()
-
-    def get_profile_by_id(self, profile_id: int) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM profiles WHERE id = ?", (profile_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            return dict(row)
