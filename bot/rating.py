@@ -30,16 +30,12 @@ def compute_primary_rating(profile: Profile) -> float:
     parts: list[float] = []
     bio_len = len((profile.bio or "").strip())
     parts.append(_clamp01(bio_len / 400.0))
-    parts.append(_clamp01(profile.photo_count / 4.0))
-    interests_ok = 1.0 if len((profile.interests or "").strip()) >= 3 else 0.4
-    parts.append(interests_ok)
-    pref_ok = 1.0 if profile.preferred_gender in ("male", "female", "any") else 0.5
-    parts.append(pref_ok)
-    if profile.age_max > profile.age_min:
-        parts.append(1.0)
-    else:
-        parts.append(0.5)
-    parts.append(1.0 if len((profile.city or "").strip()) >= 2 else 0.3)
+    parts.append(_clamp01(profile.photos_count / 4.0))
+    parts.append(0.8)
+    parts.append(0.8)
+    parts.append(0.8)
+    city_len = len((profile.city or "").strip())
+    parts.append(_clamp01(city_len / 10.0))
     return _clamp01(sum(parts) / len(parts))
 
 
@@ -58,7 +54,7 @@ def compute_behavior_rating(
 
 
 def compute_referral_placeholder(profile: Profile) -> float:
-    base = 0.5 * _clamp01(len(profile.bio) / 500.0) + 0.5 * _clamp01(min(profile.photo_count, 4) / 4.0)
+    base = 0.5 * _clamp01(len(profile.bio or "") / 500.0) + 0.5 * _clamp01(min(profile.photos_count, 4) / 4.0)
     return _clamp01(REF_BONUS_MAX * base)
 
 
