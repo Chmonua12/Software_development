@@ -1,9 +1,4 @@
-"""Feed Service — лента анкет с Redis-кэшем.
 
-Реализует паттерн: первая анкета через все сервисы,
-параллельно подгружается пачка из N анкет в Redis.
-На последней анкете круг повторяется.
-"""
 from __future__ import annotations
 import json
 import logging
