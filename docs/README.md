@@ -12,3 +12,4 @@
 | [feed-and-likes.md](feed-and-likes.md) | Лента, Redis-пачка, лайк и события в очередь |
 | [rating-event-pipeline.md](rating-event-pipeline.md) | Поток событий до пересчёта рейтинга и кэша |
 | [schema.dbml](schema.dbml) | Схема БД (DBML) для ER-диаграммы |
+| [practice-checklist.md](practice-checklist.md) | Чеклист соответствия этапам и доп. баллам практики |

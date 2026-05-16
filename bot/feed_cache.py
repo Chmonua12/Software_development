@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 import threading
 from typing import Any, Protocol
 
+from bot.metrics import cache_metric
 from bot.rating import recompute_for_profile
 from bot.storage import Profile, UserStorage
 
+logger = logging.getLogger(__name__)
+
 PREFETCH_N = 10
 REDIS_KEY = "feed_queue:{}"
+MQ_KEY = "mq:interaction_events"
+TOP_KEY = "top_profiles"
 
 
 class SupportsRedis(Protocol):
@@ -16,6 +23,7 @@ class SupportsRedis(Protocol):
     def rpop(self, name: str) -> str | None: ...
     def llen(self, name: str) -> int: ...
     def delete(self, *names: str) -> int: ...
+    def expire(self, name: str, time: int) -> bool: ...
 
 
 class InMemoryCache:
@@ -51,6 +59,9 @@ class InMemoryCache:
                     n += 1
         return n
 
+    def expire(self, name: str, time: int) -> bool:
+        return name in self._queues
+
 
 def _connect_redis() -> SupportsRedis | None:
     url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -63,28 +74,23 @@ def _connect_redis() -> SupportsRedis | None:
     try:
         r = redis.from_url(url, decode_responses=True, socket_connect_timeout=2.0)
         r.ping()
+        logger.info("Connected to Redis")
         return r
-    except Exception:
+    except Exception as exc:
+        logger.warning("Redis unavailable, using in-memory cache: %s", exc)
         return None
 
 
 _CACHE: InMemoryCache | None = None
 _REDIS: SupportsRedis | None = None
-_REDIS_LOGGED = False
 
 
 def _get_backend() -> tuple[SupportsRedis | InMemoryCache, str]:
-    global _REDIS, _CACHE, _REDIS_LOGGED
+    global _REDIS, _CACHE
     if _REDIS is None and _CACHE is None:
         _REDIS = _connect_redis()
         if _REDIS is None:
             _CACHE = InMemoryCache()
-            if not _REDIS_LOGGED:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Redis недоступен — используется in-memory кэш"
-                )
-                _REDIS_LOGGED = True
     if _REDIS is not None:
         return _REDIS, "redis"
     assert _CACHE is not None
@@ -95,38 +101,43 @@ def _key_for(viewer_profile_id: int) -> str:
     return REDIS_KEY.format(viewer_profile_id)
 
 
-def build_ranked_ids(store: UserStorage, viewer: Profile) -> list[int]:
-    ex = store.get_already_shown_to_ids(viewer.id)
-    cands = store.list_candidate_profiles(viewer, ex, limit=500)
+def build_ranked_ids(store: UserStorage, viewer: Profile, include_seen: bool = False) -> list[int]:
+    excluded = [] if include_seen else store.get_already_shown_to_ids(viewer.id)
+    candidates = store.list_candidate_profiles(viewer, excluded, limit=500)
     scored: list[tuple[float, int]] = []
-    for p in cands:
-        recompute_for_profile(store, p)
-        r = store.get_rating_row(p.id)
-        if r is not None:
-            scored.append((r.combined_rating, p.id))
+
+    for profile in candidates:
+        scores = recompute_for_profile(store, profile)
+        # Stable tiny boost imitates a time-window signal without hiding the main rating.
+        activity_boost = (profile.id % 24) * 0.0005
+        scored.append((scores.combined + activity_boost, profile.id))
+
     scored.sort(key=lambda t: t[0], reverse=True)
-    return [i for _, i in scored]
+    return [profile_id for _, profile_id in scored]
 
 
-def refill_if_needed(
-    store: UserStorage,
-    viewer: Profile,
-    min_len: int = 3,
-) -> None:
-    backend, _ = _get_backend()
-    k = _key_for(viewer.id)
-    if backend.llen(k) >= min_len:
+def refill_if_needed(store: UserStorage, viewer: Profile, min_len: int = 3) -> None:
+    backend, backend_name = _get_backend()
+    key = _key_for(viewer.id)
+    current_len = backend.llen(key)
+    if current_len >= min_len:
+        cache_metric(True)
         return
+
+    cache_metric(False)
     ids = build_ranked_ids(store, viewer)
     if not ids:
         return
-    to_push: list[str] = []
-    for pid in ids[:PREFETCH_N]:
-        to_push.append(str(pid))
-    if to_push:
-        backend.delete(k)
-        for sid in reversed(to_push):
-            backend.lpush(k, sid)
+
+    to_push = [str(pid) for pid in ids[:PREFETCH_N]]
+    backend.delete(key)
+    for sid in reversed(to_push):
+        backend.lpush(key, sid)
+    try:
+        backend.expire(key, 60 * 15)
+    except Exception:
+        pass
+    logger.info("Refilled %s feed cache for profile %s with %d ids", backend_name, viewer.id, len(to_push))
 
 
 def pop_next_id(viewer_profile_id: int) -> int | None:
@@ -149,10 +160,47 @@ def publish_interaction_event(
     to_pid: int,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    line = store.get_event_log_payload(event_type, from_pid, to_pid, extra=extra)
+    payload = store.get_event_log_payload(event_type, from_pid, to_pid, extra)
+    backend, backend_name = _get_backend()
+    try:
+        backend.lpush(MQ_KEY, payload)
+        if backend_name == "redis":
+            backend.expire(MQ_KEY, 60 * 60 * 24)
+    except Exception as exc:
+        logger.warning("Could not publish event to queue: %s", exc)
+    store.record_event(event_type, from_pid, to_pid, extra)
+
+
+def refresh_top_cache(store: UserStorage, limit: int = 10) -> int:
     backend, _ = _get_backend()
-    if hasattr(backend, "lpush"):
+    rows = store.get_top_profiles(limit=limit)
+    payload = [
+        {
+            "profile_id": profile.id,
+            "display_name": profile.display_name,
+            "city": profile.city,
+            "combined_rating": rating.combined_rating,
+            "likes_count": rating.likes_count,
+        }
+        for profile, rating in rows
+    ]
+    backend.delete(TOP_KEY)
+    if payload:
+        backend.lpush(TOP_KEY, json.dumps(payload, ensure_ascii=False))
         try:
-            backend.lpush("mq:interaction_events", line)
+            backend.expire(TOP_KEY, 300)
         except Exception:
             pass
+    return len(payload)
+
+
+def get_cached_top() -> list[dict[str, Any]] | None:
+    backend, _ = _get_backend()
+    raw = backend.rpop(TOP_KEY)
+    if raw is None:
+        return None
+    backend.lpush(TOP_KEY, raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
